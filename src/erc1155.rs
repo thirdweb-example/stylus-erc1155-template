@@ -1,3 +1,5 @@
+//! this contract is not audited
+
 use alloc::{string::String, vec, vec::Vec};
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::sol;

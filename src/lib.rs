@@ -1,3 +1,5 @@
+//! this contract is not audited
+
 #![cfg_attr(not(any(feature = "export-abi", test)), no_main)]
 extern crate alloc;
 
