@@ -1,13 +1,11 @@
 //! this contract is not audited
 
-use alloc::{string::String, vec, vec::Vec};
+use alloc::{string::String, vec::Vec};
 use alloy_primitives::{Address, U256};
 use alloy_sol_types::sol;
-use core::{borrow::BorrowMut, marker::PhantomData};
+use core::marker::PhantomData;
 use stylus_sdk::{
     abi::Bytes,
-    evm,
-    msg,
     prelude::*
 };
 
@@ -18,7 +16,7 @@ pub trait Erc1155Params {
 }
 
 sol_storage! {
-    pub struct Erc1155<T: Erc1155Params> {
+    pub struct Erc1155<T> {
         mapping(uint256 => mapping(address => uint256)) balances;
         mapping(address => mapping(address => bool)) operator_approvals;
         mapping(uint256 => uint256) total_supply;
@@ -42,8 +40,8 @@ sol! {
 
 sol_interface! {
     interface IERC1155Receiver {
-        function onERC1155Received(address,address,uint256,uint256,bytes) external returns(bytes4);
-        function onERC1155BatchReceived(address,address,uint256[],uint256[],bytes) external returns(bytes4);
+        function onERC1155Received(address,address,uint256,uint256,bytes) external view returns(bytes4);
+        function onERC1155BatchReceived(address,address,uint256[],uint256[],bytes) external view returns(bytes4);
     }
 }
 
@@ -90,16 +88,16 @@ impl Ownable {
 impl<T: Erc1155Params> Erc1155<T> {
     #[inline(always)]
     fn _is_approved_or_owner(&self, owner: Address) -> bool {
-        owner == msg::sender()
-            || self.operator_approvals.getter(owner).get(msg::sender())
+        owner == self.vm().msg_sender()
+            || self.operator_approvals.getter(owner).get(self.vm().msg_sender())
     }
 
     fn require_authorized_to_spend(&self, owner: Address) -> Result<(), String> {
-        if msg::sender() == owner {
+        if self.vm().msg_sender() == owner {
             return Ok(());
         }
 
-        if self.operator_approvals.getter(owner).get(msg::sender()) {
+        if self.operator_approvals.getter(owner).get(self.vm().msg_sender()) {
             return Ok(());
         }
 
@@ -127,18 +125,19 @@ impl<T: Erc1155Params> Erc1155<T> {
         Ok(())
     }
 
-    fn _call_receiver_single<S: TopLevelStorage>(
-        storage: &mut S,
+    fn _call_receiver_single(
+        &self,
         from:   Address,
         to:     Address,
         id:     U256,
         amount: U256,
         data:   Vec<u8>,
     ) -> Result<(), String> {
-        if to.has_code() {
+        if self.vm().code_size(to) > 0 {
+            let sender = self.vm().msg_sender();
             let receiver = IERC1155Receiver::new(to);
             let received = receiver
-                .on_erc_1155_received(&mut *storage, msg::sender(), from, id, amount, data.into())
+                .on_erc_1155_received(self.vm(), Call::new(), sender, from, id, amount, data.into())
                 .map_err(|_| "ERC1155Receiver: low-level call failed")?
                 .0;
     
@@ -151,18 +150,19 @@ impl<T: Erc1155Params> Erc1155<T> {
     }
 
     #[inline(never)]
-    fn _call_receiver_batch<S: TopLevelStorage>(
-        storage: &mut S,
+    fn _call_receiver_batch(
+        &self,
         from:   Address,
         to:     Address,
         ids:     Vec<U256>,
         amounts: Vec<U256>,
         data:   Vec<u8>,
     ) -> Result<(), String> {
-        if to.has_code() {
+        if self.vm().code_size(to) > 0 {
+            let sender = self.vm().msg_sender();
             let receiver = IERC1155Receiver::new(to);
             let received = receiver
-                .on_erc_1155_batch_received(&mut *storage, msg::sender(), from, ids, amounts, data.into())
+                .on_erc_1155_batch_received(self.vm(), Call::new(), sender, from, ids, amounts, data.into())
                 .map_err(|_| "ERC1155Receiver: low-level call failed")?
                 .0;
 
@@ -185,8 +185,8 @@ impl<T: Erc1155Params> Erc1155<T> {
         let ts = self.total_supply.getter(id).get() + amount;
         self.total_supply.setter(id).set(ts);
     
-        evm::log(TransferSingle {
-            operator: msg::sender(),
+        self.vm().log(TransferSingle {
+            operator: self.vm().msg_sender(),
             from:     Address::ZERO,
             to,
             id,
@@ -211,25 +211,26 @@ impl<T: Erc1155Params> Erc1155<T> {
         Ok(T::uri(id))
     }
 
-    pub fn safe_transfer_from<S: TopLevelStorage + BorrowMut<Self>>(
-        storage: &mut S,
+    pub fn safe_transfer_from(
+        &mut self,
         from: Address,
         to: Address,
         id: U256,
         value: U256,
         data: Vec<u8>,
     ) -> Result<(), String> {
-        storage.borrow_mut().require_authorized_to_spend(from);
-        storage.borrow_mut()._update_balance(from, to, id, value)?;
-        evm::log(TransferSingle {
-            operator: msg::sender(), from, to, id, value
+        self.require_authorized_to_spend(from);
+        self._update_balance(from, to, id, value)?;
+        let sender = self.vm().msg_sender();
+        self.vm().log(TransferSingle {
+            operator: sender, from, to, id, value
         });
-        Self::_call_receiver_single(storage, from, to, id, value, data)?;
+        self._call_receiver_single(from, to, id, value, data)?;
         Ok(())
     }
 
-    pub fn safe_batch_transfer_from<S: TopLevelStorage + BorrowMut<Self>>(
-        storage: &mut S,
+    pub fn safe_batch_transfer_from(
+        &mut self,
         from:    Address,
         to:      Address,
         ids:     Vec<U256>,
@@ -239,21 +240,22 @@ impl<T: Erc1155Params> Erc1155<T> {
         if ids.len() != amounts.len() {
             return Err("length mismatch".into());
         }
-        storage.borrow_mut()._is_approved_or_owner(from);
+        self._is_approved_or_owner(from);
     
         for (i, id) in ids.iter().enumerate() {
-            storage.borrow_mut()._update_balance(from, to, *id, amounts[i])?;
+            self._update_balance(from, to, *id, amounts[i])?;
         }
-    
-        evm::log(TransferBatch {
-            operator: msg::sender(),
+
+        let sender = self.vm().msg_sender();
+        self.vm().log(TransferBatch {
+            operator: sender,
             from,
             to,
             ids:     ids.clone(),
             values:  amounts.clone(),
         });
     
-        Self::_call_receiver_batch(storage, from, to, ids, amounts, data.0)?;
+        self._call_receiver_batch(from, to, ids, amounts, data.to_vec())?;
         Ok(())
     }
 
@@ -288,12 +290,12 @@ impl<T: Erc1155Params> Erc1155<T> {
     }
 
     pub fn set_approval_for_all(&mut self, operator: Address, approved: bool) -> Result<(), String> {
-        let owner = msg::sender();
+        let owner = self.vm().msg_sender();
         self.operator_approvals
             .setter(owner)
             .insert(operator, approved);
 
-        evm::log(ApprovalForAll {
+        self.vm().log(ApprovalForAll {
             owner,
             operator,
             approved,

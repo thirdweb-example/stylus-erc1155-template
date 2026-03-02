@@ -7,9 +7,7 @@ extern crate alloc;
 mod erc1155;
 
 use alloy_primitives::{U256, Address};
-use stylus_sdk::{
-    msg, prelude::*
-};
+use stylus_sdk::prelude::*;
 use crate::erc1155::{Erc1155, Erc1155Params, Ownable};
 
 struct StylusERC1155Params;
@@ -33,7 +31,6 @@ sol_storage! {
 }
 
 #[public]
-#[inherit(Erc1155<StylusERC1155Params>, Ownable)]
 impl MyStylusERC1155 {
     #[constructor]
     pub fn constructor(&mut self, owner: Address) {
