@@ -1,7 +1,7 @@
 //! this contract is not audited
 
 use alloc::{string::String, vec::Vec};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, FixedBytes, U256};
 use alloy_sol_types::sol;
 use core::marker::PhantomData;
 use stylus_sdk::{
@@ -307,5 +307,10 @@ impl<T: Erc1155Params> Erc1155<T> {
         Ok(self.operator_approvals.getter(owner).get(operator))
     }
 
-    // TODO: supports interface
+    pub fn supports_interface(&self, interface_id: FixedBytes<4>) -> bool {
+        // ERC-1155: 0xd9b67a26, ERC-1155 Metadata: 0x0e89341c, ERC-165: 0x01ffc9a7
+        interface_id == FixedBytes::from([0xd9, 0xb6, 0x7a, 0x26])
+            || interface_id == FixedBytes::from([0x0e, 0x89, 0x34, 0x1c])
+            || interface_id == FixedBytes::from([0x01, 0xff, 0xc9, 0xa7])
+    }
 }
